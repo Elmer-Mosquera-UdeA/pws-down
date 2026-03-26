@@ -25,11 +25,17 @@ function Save-PwsConfig {
     $global:PwsState | ConvertTo-Json -Depth 3 | Set-Content $global:PwsConfigFile
 }
 
-# AutoUpdate al inicio
+# AutoUpdate al inicio (Filtro RegEx estricto)
 if ($global:PwsState.AutoUpdate) {
     Start-Job -ScriptBlock {
-        $py = (python --version 2>&1) -replace "Python ", ""
-        $cpp = (g++ --version 2>&1 | Select-Object -First 1) -match "(\d+\.\d+\.\d+)" | Out-Null; $cppVer = $matches[1]
+        # Detección estricta de Python
+        $pyRaw = (python --version 2>&1 | Select-Object -First 1) -join ""
+        if ($pyRaw -match "(?i)python\s+(\d+\.\d+(\.\d+)?)") { $py = $matches[1] } else { $py = $null }
+        
+        # Detección estricta de C++
+        $cppRaw = (g++ --version 2>&1 | Select-Object -First 1) -join ""
+        if ($cppRaw -match "(\d+\.\d+\.\d+)") { $cppVer = $matches[1] } else { $cppVer = $null }
+        
         return @{ Python = $py; Cpp = $cppVer }
     } | Receive-Job -Wait -AutoRemoveJob -OutVariable jobResult | Out-Null
     
@@ -63,37 +69,46 @@ function pws {
     # --- Lógica de Actualización de Caché (-u) ---
     if ($u -or $update) {
         Write-Host "🔄 Escaneando versiones de software..." -ForegroundColor Cyan
+        
+        # Python con validación estricta
         try {
-            $pyVer = (python --version 2>&1) -replace "Python ", ""
-            $global:PwsState.Cache.Python = $pyVer
-            Write-Host "  ✅ Python: v$pyVer" -ForegroundColor Green
+            $pyRaw = (python --version 2>&1 | Select-Object -First 1) -join ""
+            if ($pyRaw -match "(?i)python\s+(\d+\.\d+(\.\d+)?)") {
+                $global:PwsState.Cache.Python = $matches[1]
+                Write-Host "  ✅ Python: v$($matches[1])" -ForegroundColor Green
+            } else {
+                $global:PwsState.Cache.Python = $null
+                Write-Host "  ➖ Python no instalado o bloqueado por Windows Store." -ForegroundColor DarkGray
+            }
         } catch { $global:PwsState.Cache.Python = $null }
 
+        # C++ con validación estricta
         try {
-            g++ --version 2>&1 | Select-Object -First 1 -OutVariable cppRaw | Out-Null
+            $cppRaw = (g++ --version 2>&1 | Select-Object -First 1) -join ""
             if ($cppRaw -match "(\d+\.\d+\.\d+)") {
                 $global:PwsState.Cache.Cpp = $matches[1]
                 Write-Host "  ✅ C++ (g++): v$($matches[1])" -ForegroundColor Green
+            } else {
+                $global:PwsState.Cache.Cpp = $null
+                Write-Host "  ➖ C++ (g++) no detectado." -ForegroundColor DarkGray
             }
         } catch { $global:PwsState.Cache.Cpp = $null }
+        
         $isUpdating = $true
     }
 
     # --- Lógica de Gestión de Configuración (-c) ---
     if ($c -or $config) {
         if ($ap) {
-            # Guardar el estado actual como el nuevo predeterminado
             $global:PwsState | ConvertTo-Json -Depth 3 | Set-Content $global:PwsDefaultFile
             Write-Host "💾 Estado actual guardado como tu configuración PREDETERMINADA." -ForegroundColor Green
         }
         elseif ($dp) {
-            # Cargar el estado predeterminado
             if (Test-Path $global:PwsDefaultFile) {
                 $loaded = Get-Content $global:PwsDefaultFile -Raw | ConvertFrom-Json -AsHashtable
                 foreach ($key in $loaded.Keys) { $global:PwsState[$key] = $loaded[$key] }
                 Write-Host "♻️ Restaurado a tu configuración PREDETERMINADA guardada." -ForegroundColor Cyan
             } else {
-                # Si no hay guardado, valores de fábrica
                 $global:PwsState.Mode = "minimalista"
                 $global:PwsState.Locals = $false
                 $global:PwsState.Installs = $false
